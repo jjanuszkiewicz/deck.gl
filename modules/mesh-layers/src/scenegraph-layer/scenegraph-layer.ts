@@ -29,6 +29,7 @@ import {
   createGLTFObjects
 } from '@luma.gl/experimental';
 import GL from '@luma.gl/constants';
+import {Vector3} from '@math.gl/core';
 import {GLTFLoader} from '@loaders.gl/gltf';
 import {waitForGLTFAssets} from './gltf-utils';
 
@@ -99,6 +100,15 @@ type _ScenegraphLayerProps<DataT> = {
     | GLTFEnvironment
     | ((context: {gl: WebGLRenderingContext; layer: ScenegraphLayer<DataT>}) => GLTFEnvironment);
 
+  /**
+   * (Experimental) If rendering only one instance of the scenegraph, set this to false to treat vertex positions
+   * as deltas of the world coordinates of the anchor.
+   * E.g. in LNGLAT coordinates, vertex positions are interpreted as meter offsets by default.
+   * setting _instanced to false interpreted vertex positions as lnglat deltas.
+   * @default true
+   */
+  _instanced?: boolean; // TODO - formalize API
+
   /** Anchor position accessor. */
   getPosition?: Accessor<DataT, Position>;
   /** Color value or accessor.
@@ -165,6 +175,7 @@ const defaultProps: DefaultProps<ScenegraphLayerProps> = {
   _lighting: 'flat',
   // _lighting must be pbr for this to work
   _imageBasedLightingEnvironment: null,
+  _instanced: true,
 
   // yaw, pitch and roll are in degrees
   // https://en.wikipedia.org/wiki/Euler_angles
@@ -189,6 +200,7 @@ export default class ScenegraphLayer<DataT = any, ExtraPropsT extends {} = {}> e
     scenegraph: GroupNode;
     animator: GLTFAnimator;
     attributesAvailable?: boolean;
+    positionBounds?: [number[], number[]] | null;
   };
 
   getShaders() {
@@ -199,6 +211,39 @@ export default class ScenegraphLayer<DataT = any, ExtraPropsT extends {} = {}> e
     }
 
     return {vs, fs, modules};
+  }
+
+  getBounds(): [number[], number[]] | null {
+    if (this.props._instanced) {
+      return super.getBounds();
+    }
+    let result = this.state.positionBounds;
+    if (result) {
+      return result;
+    }
+    const {scenegraph} = this.state;
+    if (!scenegraph) {
+      return null;
+    }
+    
+    result = [[Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]];
+    scenegraph.traverse((node, {worldMatrix}) => {
+      const [min, max] = node.bounds;
+      let center = new Vector3(min).add(max).divide([2, 2, 2]);
+      center = worldMatrix.transformAsPoint(center);
+      const radius = new Vector3(max).subtract(min).magnitude() / 2;
+
+      for (let i = 0; i < 3; i++) {
+        result![0][i] = Math.min(result![0][i], center[i] - radius);
+        result![1][i] = Math.max(result![1][i], center[i] + radius);
+      }
+    });
+    if (!Number.isFinite(result[0][0])) {
+      result = null;
+    }
+
+    this.state.positionBounds = result;
+    return result;
   }
 
   initializeState() {
@@ -229,6 +274,7 @@ export default class ScenegraphLayer<DataT = any, ExtraPropsT extends {} = {}> e
     const {props, oldProps} = params;
 
     if (props.scenegraph !== oldProps.scenegraph) {
+      this.state.positionBounds = null;
       this._updateScenegraph();
     } else if (props._animations !== oldProps._animations) {
       this._applyAnimationsProp(this.state.scenegraph, this.state.animator, props._animations);
@@ -381,7 +427,7 @@ export default class ScenegraphLayer<DataT = any, ExtraPropsT extends {} = {}> e
     }
 
     const {viewport} = this.context;
-    const {sizeScale, sizeMinPixels, sizeMaxPixels, opacity, coordinateSystem} = this.props;
+    const {sizeScale, sizeMinPixels, sizeMaxPixels, opacity, coordinateSystem, _instanced} = this.props;
     const numInstances = this.getNumInstances();
     this.state.scenegraph.traverse((model, {worldMatrix}) => {
       model.model.setInstanceCount(numInstances);
@@ -393,7 +439,7 @@ export default class ScenegraphLayer<DataT = any, ExtraPropsT extends {} = {}> e
           opacity,
           sizeMinPixels,
           sizeMaxPixels,
-          composeModelMatrix: shouldComposeModelMatrix(viewport, coordinateSystem),
+          composeModelMatrix: !_instanced || shouldComposeModelMatrix(viewport, coordinateSystem),
           sceneModelMatrix: worldMatrix,
           // Needed for PBR (TODO: find better way to get it)
           // eslint-disable-next-line camelcase

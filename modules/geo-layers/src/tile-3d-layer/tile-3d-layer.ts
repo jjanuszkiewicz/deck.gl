@@ -327,6 +327,7 @@ export default class Tile3DLayer<DataT = any, ExtraPropsT extends {} = {}> exten
         tile: tileHeader,
         data: instances || SINGLE_DATA,
         scenegraph: gltf,
+        _instanced: false,
 
         coordinateSystem: COORDINATE_SYSTEM.METER_OFFSETS,
         coordinateOrigin: cartographicOrigin,
